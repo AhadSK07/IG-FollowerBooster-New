@@ -71,6 +71,7 @@ class PanelBot:
         self.username = username
         self.password = password
         self.target = target
+        self.status_reason = "Unknown"  # Tracks the specific reason for success/failure
         self.session = requests.Session()
         self.session.headers.update({
             'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/106.0.0.0 Safari/537.36'
@@ -98,17 +99,20 @@ class PanelBot:
                 try:
                     result = response.json()
                 except ValueError:
-                    self.log("Login failed: Non-JSON response received.", "error")
+                    self.status_reason = "Login Failed: Non-JSON Response"
+                    self.log(self.status_reason, "error")
                     return False
 
                 if 'returnUrl' in result:
                     self.log("Login successful.")
                     return True
                 elif 'error' in result:
-                    self.log(f"Login failed: {result['error']}", "error")
+                    self.status_reason = f"Login Failed: {result['error']}"
+                    self.log(self.status_reason, "error")
                     return False
                 else:
-                    self.log("Login failed: Unknown response format.", "error")
+                    self.status_reason = "Login Failed: Unknown Response"
+                    self.log(self.status_reason, "error")
                     return False
 
             except requests.RequestException as e:
@@ -116,6 +120,7 @@ class PanelBot:
                     self.log(f"Login network error: {e}. Retrying in 2 seconds...", "error")
                     time.sleep(2)
                 else:
+                    self.status_reason = f"Login Network Error: {e}"
                     self.log(f"Login failed after retry: {e}", "error")
                     return False
         return False
@@ -130,14 +135,19 @@ class PanelBot:
                 
                 if credit_element:
                     try:
-                        return int(credit_element.text.strip())
+                        val = int(credit_element.text.strip())
+                        if val == 0:
+                            self.status_reason = "Skipped: 0 Credits"
+                        return val
                     except ValueError:
+                        self.status_reason = "Skipped: Credit Parse Error"
                         return 0
                 else:
                     if attempt == 0:
                         self.log("Credit element not found. Retrying...", "error")
                         time.sleep(2)
                         continue
+                    self.status_reason = "Skipped: Credit Element Not Found"
                     return 0
 
             except requests.RequestException as e:
@@ -145,9 +155,11 @@ class PanelBot:
                     self.log(f"Get Credits network error: {e}. Retrying in 2 seconds...", "error")
                     time.sleep(2)
                 else:
+                    self.status_reason = f"Get Credits Error: {e}"
                     self.log(f"Failed to get credits after retry: {e}", "error")
                     return 0
-            except Exception:
+            except Exception as e:
+                self.status_reason = f"Get Credits Crash: {e}"
                 return 0
         return 0
 
@@ -160,7 +172,8 @@ class PanelBot:
             try:
                 user_id = response_find.url.split("/")[-1]
             except Exception:
-                self.log("Failed to extract User ID.", "error")
+                self.status_reason = "Failed: Could not extract User ID"
+                self.log(self.status_reason, "error")
                 return False
 
             self.log(f"Target ID found: {user_id}. Sending {credit_amount} followers...")
@@ -172,11 +185,14 @@ class PanelBot:
 
             if result.get('status') == 'success':
                 self.log(f"SUCCESS: Sent {credit_amount} followers.")
+                self.status_reason = f"Success ({credit_amount} sent)"
                 return True
             else:
+                self.status_reason = f"API Error: {result.get('message')}"
                 self.log(f"FAILED to send: {result.get('message')}", "error")
                 return False
         except Exception as e:
+            self.status_reason = f"Send Exception: {e}"
             self.log(f"Error sending: {e}", "error")
             return False
             
@@ -187,17 +203,20 @@ class PanelBot:
             pass
 
     def run(self):
-        if self.login():
-            credits = self.get_credits()
-            self.log(f"Credits available: {credits}")
-            if credits > 0:
-                success = self.send_followers(credits)
-                return success
-            else:
-                self.log("Skipping sending due to 0 credits.")
-                return False
+        if not self.login():
+            return False
+
+        credits = self.get_credits()
+        self.log(f"Credits available: {credits}")
+        
+        if credits > 0:
+            success = self.send_followers(credits)
+            return success
         else:
-            self.log("Skipping operations due to login failure.")
+            self.log("Skipping sending due to 0 credits.")
+            # status_reason is already set in get_credits if it was 0 or parse error
+            if self.status_reason == "Unknown": 
+                self.status_reason = "Skipped: 0 Credits"
             return False
 
 # --- ORCHESTRATION ---
@@ -212,6 +231,11 @@ def main():
         return
 
     print(f"Loaded {len(accounts)} accounts.")
+    
+    # 1. Initialize Report Data
+    summary_data = []
+    success_count = 0
+    fail_count = 0
 
     for account in accounts:
         current_user = account.get('username')
@@ -227,23 +251,44 @@ def main():
 
         for i, site_url in enumerate(WEBSITES):
             print(f"\n--- Site {i+1}/{len(WEBSITES)}: {site_url} ---")
+            
             bot = None
+            final_status = "FAILED"
+            reason = "Script Crash"
+            
             try:
                 bot = PanelBot(site_url, current_user, password, TARGET_USER)
                 success = bot.run()
                 
+                # Retrieve the reason from the bot instance
+                reason = bot.status_reason
+                
                 if success:
+                    final_status = "SUCCESS"
+                    success_count += 1
                     print(f"{site_url} | Operation succeeded.")
+                    
                     if POST_TASK_WAIT > 0:
                         print(f">> Waiting {POST_TASK_WAIT}s for completion...")
                         time.sleep(POST_TASK_WAIT)
                 else:
+                    fail_count += 1
                     print(f"{site_url} | Operation failed or skipped.")
             
             except Exception as e:
                 logging.error(f"{site_url} | Unexpected error: {e}")
+                reason = str(e)
+                fail_count += 1
             
             finally:
+                # 2. Add to Summary Data
+                summary_data.append({
+                    "account": current_user,
+                    "site": site_url,
+                    "status": final_status,
+                    "reason": reason
+                })
+
                 if bot:
                     bot.close_session()
 
@@ -252,7 +297,22 @@ def main():
                 print(f">> Cooldown: Waiting {delay:.2f} seconds...")
                 time.sleep(delay)
 
-    print("\nAll tasks completed successfully.")
+    # 3. Print Final Report
+    print("\n\n" + "="*80)
+    print(f"FINAL REPORT - TOTAL: {success_count + fail_count} | SUCCESS: {success_count} | FAILED: {fail_count}")
+    print("="*80)
+    # Header
+    print(f"{'ACCOUNT':<15} | {'WEBSITE':<30} | {'STATUS':<10} | REASON")
+    print("-" * 80)
+    
+    for item in summary_data:
+        # Simplify URL for cleaner table (remove https://)
+        clean_site = item['site'].replace('https://', '').split('/')[0]
+        
+        print(f"{item['account']:<15} | {clean_site:<30} | {item['status']:<10} | {item['reason']}")
+        
+    print("="*80)
+    print("All tasks completed.")
 
 if __name__ == "__main__":
     main()
