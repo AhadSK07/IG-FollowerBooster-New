@@ -25,7 +25,7 @@ WEBSITES = [
     "https://bayitakipci.com/memberlogin"
 ]
 
-TARGET_USER = "mr_faiz__1127"
+TARGET_USER = "almostahad"
 
 # --- LOGGING SETUP ---
 logging.basicConfig(
