@@ -29,4 +29,4 @@ jobs:
           # This maps the GitHub Secret to the Environment Variable the script looks for
           ACCOUNTS_JSON: ${{ secrets.ACCOUNTS_JSON }}
         run: |
-          python panel_automator.py
+          python -u panel_automator.py
