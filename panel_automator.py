@@ -7,11 +7,19 @@ import json
 import os
 from urllib.parse import urlparse
 
-# --- CONFIGURATION ---
+# ==============================================================================
+# CONFIGURATION
+# ==============================================================================
 
+# Time (in seconds) to wait after a successful "Send Followers" operation.
+# Keeping the session alive helps ensure the server processes the request.
 POST_TASK_WAIT = 120 
+
+# Random delay range (min, max) in seconds to wait between switching websites.
+# This helps mimic human behavior and avoids rate limiting.
 INTER_SITE_DELAY = (30, 45)
 
+# List of SMM Panel Login URLs. The script assumes they all share the same backend architecture.
 WEBSITES = [
     "https://instamoda.org/login",
     "https://takipcitime.com/login",
@@ -25,9 +33,14 @@ WEBSITES = [
     "https://bayitakipci.com/memberlogin"
 ]
 
+# The Instagram username that will receive the followers.
 TARGET_USER = "almostahad"
 
-# --- LOGGING SETUP ---
+# ==============================================================================
+# LOGGING SETUP
+# ==============================================================================
+# We use pipe '|' separators instead of brackets '[]' to prevent GitHub Actions
+# from masking the logs as secrets.
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(levelname)s | %(message)s',
@@ -37,6 +50,15 @@ logging.basicConfig(
 )
 
 def setup_accounts():
+    """
+    Loads account credentials with a priority fallback mechanism:
+    1. GitHub Secrets (Environment Variable 'ACCOUNTS_JSON').
+    2. Local File ('accounts.json').
+    
+    Returns:
+        List[dict]: A list of dictionaries containing 'username' and 'password'.
+    """
+    # Priority 1: Check if running in Cloud/GitHub Actions
     env_data = os.environ.get("ACCOUNTS_JSON")
     if env_data:
         print(">> SOURCE: Found 'ACCOUNTS_JSON' in environment variables.")
@@ -46,6 +68,7 @@ def setup_accounts():
             logging.error(f"CRITICAL: Environment variable 'ACCOUNTS_JSON' has invalid JSON syntax: {e}")
             return []
 
+    # Priority 2: Check if running locally on PC
     print(">> SOURCE: Environment variable not found. Checking for local 'accounts.json' file...")
     if os.path.exists("accounts.json"):
         try:
@@ -60,24 +83,36 @@ def setup_accounts():
             logging.error(f"CRITICAL: Error reading local file: {e}")
             return []
 
+    # Failure: No credentials found anywhere
     logging.error("CRITICAL: No accounts found! Please set 'ACCOUNTS_JSON' secret or create 'accounts.json'.")
     return []
 
 class PanelBot:
+    """
+    A class to handle interactions with a single SMM panel website.
+    Maintains a session (cookies) and handles login, scraping credits, and sending followers.
+    """
     def __init__(self, full_login_url, username, password, target):
         self.login_url = full_login_url
+        
+        # Extract base URL (e.g., "https://site.com") from the full login link
         parsed = urlparse(full_login_url)
         self.base_url = f"{parsed.scheme}://{parsed.netloc}"
+        
         self.username = username
         self.password = password
         self.target = target
-        self.status_reason = "Unknown"  # Tracks the specific reason for success/failure
+        self.status_reason = "Unknown"  # Used for the final report to explain success/failure
+        
+        # Initialize a session to persist cookies across requests
         self.session = requests.Session()
+        # Spoof User-Agent to look like a real Chrome browser on Windows
         self.session.headers.update({
             'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/106.0.0.0 Safari/537.36'
         })
 
     def log(self, message, level="info"):
+        """Helper to print logs prefixed with the specific website and user context."""
         full_msg = f"{self.base_url} | {self.username} | {message}"
         if level == "error":
             logging.error(full_msg)
@@ -85,8 +120,10 @@ class PanelBot:
             logging.info(full_msg)
 
     def login(self):
+        """Authenticates with the panel using username and password."""
         data = {'username': self.username, 'password': self.password}
         
+        # Retry logic: Try up to 2 times to handle temporary network glitches
         for attempt in range(2):
             try:
                 if attempt > 0:
@@ -96,6 +133,7 @@ class PanelBot:
 
                 response = self.session.post(self.login_url, data=data, timeout=30)
                 
+                # Check if response is valid JSON (expected behavior)
                 try:
                     result = response.json()
                 except ValueError:
@@ -103,6 +141,7 @@ class PanelBot:
                     self.log(self.status_reason, "error")
                     return False
 
+                # Validate Login Success
                 if 'returnUrl' in result:
                     self.log("Login successful.")
                     return True
@@ -116,6 +155,7 @@ class PanelBot:
                     return False
 
             except requests.RequestException as e:
+                # Only retry on Network/Timeout errors
                 if attempt == 0:
                     self.log(f"Login network error: {e}. Retrying in 2 seconds...", "error")
                     time.sleep(2)
@@ -126,11 +166,14 @@ class PanelBot:
         return False
 
     def get_credits(self):
+        """Scrapes the website to find available follower credits."""
         for attempt in range(2):
             try:
                 tools_url = f"{self.base_url}/tools"
                 response = self.session.get(tools_url, timeout=30)
                 soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Look for the specific HTML element ID that holds credit count
                 credit_element = soup.find(id="takipKrediCount")
                 
                 if credit_element:
@@ -143,6 +186,7 @@ class PanelBot:
                         self.status_reason = "Skipped: Credit Parse Error"
                         return 0
                 else:
+                    # If HTML didn't load correctly, retry once
                     if attempt == 0:
                         self.log("Credit element not found. Retrying...", "error")
                         time.sleep(2)
@@ -164,12 +208,17 @@ class PanelBot:
         return 0
 
     def send_followers(self, credit_amount):
+        """Uses available credits to send followers to the target user."""
         if credit_amount <= 0:
             return False
+            
         try:
+            # Step 1: Resolve the internal User ID for the target username
             find_user_url = f"{self.base_url}/tools/send-follower?formType=findUserID"
             response_find = self.session.post(find_user_url, data={'username': self.target}, timeout=30)
+            
             try:
+                # The ID is usually the last part of the redirect URL
                 user_id = response_find.url.split("/")[-1]
             except Exception:
                 self.status_reason = "Failed: Could not extract User ID"
@@ -177,6 +226,8 @@ class PanelBot:
                 return False
 
             self.log(f"Target ID found: {user_id}. Sending {credit_amount} followers...")
+            
+            # Step 2: Send the actual POST request to trigger follower sending
             send_url = f"{response_find.url}?formType=send"
             send_data = {'adet': credit_amount, 'userID': user_id, 'userName': self.target}
             
@@ -191,18 +242,21 @@ class PanelBot:
                 self.status_reason = f"API Error: {result.get('message')}"
                 self.log(f"FAILED to send: {result.get('message')}", "error")
                 return False
+                
         except Exception as e:
             self.status_reason = f"Send Exception: {e}"
             self.log(f"Error sending: {e}", "error")
             return False
             
     def close_session(self):
+        """Safely closes the connection."""
         try:
             self.session.close()
         except Exception:
             pass
 
     def run(self):
+        """Main workflow for this single bot instance."""
         if not self.login():
             return False
 
@@ -214,16 +268,19 @@ class PanelBot:
             return success
         else:
             self.log("Skipping sending due to 0 credits.")
-            # status_reason is already set in get_credits if it was 0 or parse error
+            # Ensure we record the reason if it wasn't set earlier
             if self.status_reason == "Unknown": 
                 self.status_reason = "Skipped: 0 Credits"
             return False
 
-# --- ORCHESTRATION ---
+# ==============================================================================
+# ORCHESTRATION (MAIN SCRIPT)
+# ==============================================================================
 
 def main():
     print(f"Starting AUTOMATION for target: {TARGET_USER}")
     
+    # 1. Load Accounts
     accounts = setup_accounts()
     
     if not accounts:
@@ -232,11 +289,12 @@ def main():
 
     print(f"Loaded {len(accounts)} accounts.")
     
-    # 1. Initialize Report Data
+    # Data structures for the Final Report
     summary_data = []
     success_count = 0
     fail_count = 0
 
+    # 2. Loop through every Account
     for account in accounts:
         current_user = account.get('username')
         password = account.get('password')
@@ -249,6 +307,7 @@ def main():
         print(f" LOGGING IN WITH ACCOUNT: {current_user}")
         print(f"==================================================")
 
+        # 3. For each Account, loop through every Website
         for i, site_url in enumerate(WEBSITES):
             print(f"\n--- Site {i+1}/{len(WEBSITES)}: {site_url} ---")
             
@@ -257,10 +316,11 @@ def main():
             reason = "Script Crash"
             
             try:
+                # Initialize and run the bot
                 bot = PanelBot(site_url, current_user, password, TARGET_USER)
                 success = bot.run()
                 
-                # Retrieve the reason from the bot instance
+                # Capture the reason for the report
                 reason = bot.status_reason
                 
                 if success:
@@ -268,6 +328,7 @@ def main():
                     success_count += 1
                     print(f"{site_url} | Operation succeeded.")
                     
+                    # Wait after success to ensure server processing
                     if POST_TASK_WAIT > 0:
                         print(f">> Waiting {POST_TASK_WAIT}s for completion...")
                         time.sleep(POST_TASK_WAIT)
@@ -281,7 +342,7 @@ def main():
                 fail_count += 1
             
             finally:
-                # 2. Add to Summary Data
+                # Store result for final report
                 summary_data.append({
                     "account": current_user,
                     "site": site_url,
@@ -292,21 +353,22 @@ def main():
                 if bot:
                     bot.close_session()
 
+            # Random delay between websites to mimic human behavior
             if i < len(WEBSITES) - 1:
                 delay = random.uniform(INTER_SITE_DELAY[0], INTER_SITE_DELAY[1])
                 print(f">> Cooldown: Waiting {delay:.2f} seconds...")
                 time.sleep(delay)
 
-    # 3. Print Final Report
+    # 4. Print the Final Summary Report
     print("\n\n" + "="*80)
     print(f"FINAL REPORT - TOTAL: {success_count + fail_count} | SUCCESS: {success_count} | FAILED: {fail_count}")
     print("="*80)
-    # Header
+    # Table Header
     print(f"{'ACCOUNT':<15} | {'WEBSITE':<30} | {'STATUS':<10} | REASON")
     print("-" * 80)
     
     for item in summary_data:
-        # Simplify URL for cleaner table (remove https://)
+        # Clean up the URL for cleaner display (remove https://)
         clean_site = item['site'].replace('https://', '').split('/')[0]
         
         print(f"{item['account']:<15} | {clean_site:<30} | {item['status']:<10} | {item['reason']}")
