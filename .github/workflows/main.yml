@@ -9,6 +9,8 @@ on:
 jobs:
   run-automation:
     runs-on: ubuntu-latest
+    env:
+      TZ: 'Asia/Kolkata'
     
     steps:
       - name: Checkout Code
