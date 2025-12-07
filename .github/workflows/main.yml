@@ -4,7 +4,7 @@ on:
   workflow_dispatch: # Allows you to run it manually from the Actions tab
   schedule:
     # Runs at minute 0 past every 3rd hour (00:00, 03:00, 06:00, etc. UTC)
-    - cron: '0 */3 * * *'
+    - cron: '0 */2 * * *'
 
 jobs:
   run-automation:
