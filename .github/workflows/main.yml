@@ -1,17 +1,18 @@
 name: Instagram Panel Automation
 
 on:
-  workflow_dispatch: # Allows you to run it manually from the Actions tab
+  workflow_dispatch: # Allows manual trigger button
   schedule:
-    # Runs at minute 0 past every 3rd hour (00:00, 03:00, 06:00, etc. UTC)
-    - cron: '0 */2 * * *'
+    # Runs every 30 minutes
+    - cron: '*/30 * * * *'
 
 jobs:
   run-automation:
     runs-on: ubuntu-latest
-    env:
-      TZ: 'Asia/Kolkata'
     
+    env:
+      TZ: 'Asia/Kolkata' # Sets the server time to India Standard Time
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
@@ -28,7 +29,9 @@ jobs:
 
       - name: Run Python Script
         env:
-          # This maps the GitHub Secret to the Environment Variable the script looks for
+          # Passes your JSON list of accounts to the script
           ACCOUNTS_JSON: ${{ secrets.ACCOUNTS_JSON }}
+          # Passes the Run Number so the script knows which account to pick
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
         run: |
           python -u panel_automator.py
