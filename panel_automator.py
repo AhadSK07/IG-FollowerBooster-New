@@ -233,15 +233,15 @@ def main():
                 success = bot.run()
                 
                 if success:
-                    print(f"[{site_url}] Operation succeeded.")
+                    print(f"{site_url} | Operation succeeded.")
                     if POST_TASK_WAIT > 0:
                         print(f">> Waiting {POST_TASK_WAIT}s for completion...")
                         time.sleep(POST_TASK_WAIT)
                 else:
-                    print(f"[{site_url}] Operation failed or skipped.")
+                    print(f"{site_url} | Operation failed or skipped.")
             
             except Exception as e:
-                logging.error(f"[{site_url}] Unexpected error: {e}")
+                logging.error(f"{site_url} | Unexpected error: {e}")
             
             finally:
                 if bot:
