@@ -9,12 +9,7 @@ from urllib.parse import urlparse
 
 # --- CONFIGURATION ---
 
-# Time to wait (in seconds) after a successful follower send
-# Set to 0 if you want to close immediately, or 120 for safety.
 POST_TASK_WAIT = 120 
-
-# Time to wait (in seconds) between switching websites
-# (Min, Max) range for random sleep
 INTER_SITE_DELAY = (30, 45)
 
 WEBSITES = [
@@ -35,38 +30,28 @@ TARGET_USER = "mr_faiz__1127"
 # --- LOGGING SETUP ---
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - [%(levelname)s] - %(message)s',
+    format='%(asctime)s | %(levelname)s | %(message)s',
     handlers=[
         logging.StreamHandler()
     ]
 )
 
 def setup_accounts():
-    """
-    Loads accounts with a priority fallback:
-    1. Environment Variable (GitHub Secrets)
-    2. Local File (accounts.json)
-    """
-    
-    # PRIORITY 1: Check Environment Variable
     env_data = os.environ.get("ACCOUNTS_JSON")
-    
     if env_data:
-        print(">> [SOURCE] Found 'ACCOUNTS_JSON' in environment variables.")
+        print(">> SOURCE: Found 'ACCOUNTS_JSON' in environment variables.")
         try:
             return json.loads(env_data)
         except json.JSONDecodeError as e:
             logging.error(f"CRITICAL: Environment variable 'ACCOUNTS_JSON' has invalid JSON syntax: {e}")
             return []
 
-    # PRIORITY 2: Check Local File (Fallback)
-    print(">> [SOURCE] Environment variable not found. Checking for local 'accounts.json' file...")
-    
+    print(">> SOURCE: Environment variable not found. Checking for local 'accounts.json' file...")
     if os.path.exists("accounts.json"):
         try:
             with open("accounts.json", "r") as f:
                 accounts = json.load(f)
-                print(">> [SOURCE] Successfully loaded local 'accounts.json'.")
+                print(">> SOURCE: Successfully loaded local 'accounts.json'.")
                 return accounts
         except json.JSONDecodeError as e:
             logging.error(f"CRITICAL: Local file 'accounts.json' has invalid JSON syntax: {e}")
@@ -75,7 +60,6 @@ def setup_accounts():
             logging.error(f"CRITICAL: Error reading local file: {e}")
             return []
 
-    # FAILURE: Neither source worked
     logging.error("CRITICAL: No accounts found! Please set 'ACCOUNTS_JSON' secret or create 'accounts.json'.")
     return []
 
@@ -93,7 +77,7 @@ class PanelBot:
         })
 
     def log(self, message, level="info"):
-        full_msg = f"[{self.base_url}] [{self.username}] {message}"
+        full_msg = f"{self.base_url} | {self.username} | {message}"
         if level == "error":
             logging.error(full_msg)
         else:
@@ -101,42 +85,71 @@ class PanelBot:
 
     def login(self):
         data = {'username': self.username, 'password': self.password}
-        try:
-            self.log(f"Attempting login at {self.login_url}...")
-            response = self.session.post(self.login_url, data=data, timeout=30)
+        
+        for attempt in range(2):
             try:
-                result = response.json()
-            except ValueError:
-                self.log("Login failed: Non-JSON response received.", "error")
-                return False
+                if attempt > 0:
+                    self.log(f"Retry Attempt {attempt+1}/2 for Login...", "info")
+                else:
+                    self.log(f"Attempting login at {self.login_url}...", "info")
 
-            if 'returnUrl' in result:
-                self.log("Login successful.")
-                return True
-            elif 'error' in result:
-                self.log(f"Login failed: {result['error']}", "error")
-                return False
-            else:
-                self.log("Login failed: Unknown response format.", "error")
-                return False
-        except requests.RequestException as e:
-            self.log(f"Connection error during login: {str(e)}", "error")
-            return False
+                response = self.session.post(self.login_url, data=data, timeout=30)
+                
+                try:
+                    result = response.json()
+                except ValueError:
+                    self.log("Login failed: Non-JSON response received.", "error")
+                    return False
+
+                if 'returnUrl' in result:
+                    self.log("Login successful.")
+                    return True
+                elif 'error' in result:
+                    self.log(f"Login failed: {result['error']}", "error")
+                    return False
+                else:
+                    self.log("Login failed: Unknown response format.", "error")
+                    return False
+
+            except requests.RequestException as e:
+                if attempt == 0:
+                    self.log(f"Login network error: {e}. Retrying in 2 seconds...", "error")
+                    time.sleep(2)
+                else:
+                    self.log(f"Login failed after retry: {e}", "error")
+                    return False
+        return False
 
     def get_credits(self):
-        try:
-            tools_url = f"{self.base_url}/tools"
-            response = self.session.get(tools_url, timeout=30)
-            soup = BeautifulSoup(response.text, 'html.parser')
-            credit_element = soup.find(id="takipKrediCount")
-            if credit_element:
-                try:
-                    return int(credit_element.text.strip())
-                except ValueError:
+        for attempt in range(2):
+            try:
+                tools_url = f"{self.base_url}/tools"
+                response = self.session.get(tools_url, timeout=30)
+                soup = BeautifulSoup(response.text, 'html.parser')
+                credit_element = soup.find(id="takipKrediCount")
+                
+                if credit_element:
+                    try:
+                        return int(credit_element.text.strip())
+                    except ValueError:
+                        return 0
+                else:
+                    if attempt == 0:
+                        self.log("Credit element not found. Retrying...", "error")
+                        time.sleep(2)
+                        continue
                     return 0
-            return 0
-        except Exception:
-            return 0
+
+            except requests.RequestException as e:
+                if attempt == 0:
+                    self.log(f"Get Credits network error: {e}. Retrying in 2 seconds...", "error")
+                    time.sleep(2)
+                else:
+                    self.log(f"Failed to get credits after retry: {e}", "error")
+                    return 0
+            except Exception:
+                return 0
+        return 0
 
     def send_followers(self, credit_amount):
         if credit_amount <= 0:
@@ -174,10 +187,6 @@ class PanelBot:
             pass
 
     def run(self):
-        """
-        Returns:
-            bool: True if followers were successfully sent, False otherwise.
-        """
         if self.login():
             credits = self.get_credits()
             self.log(f"Credits available: {credits}")
@@ -196,7 +205,6 @@ class PanelBot:
 def main():
     print(f"Starting AUTOMATION for target: {TARGET_USER}")
     
-    # LOAD ACCOUNTS (ENV -> LOCAL FALLBACK)
     accounts = setup_accounts()
     
     if not accounts:
@@ -239,7 +247,6 @@ def main():
                 if bot:
                     bot.close_session()
 
-            # Smart delay between websites (unless it's the last one
             if i < len(WEBSITES) - 1:
                 delay = random.uniform(INTER_SITE_DELAY[0], INTER_SITE_DELAY[1])
                 print(f">> Cooldown: Waiting {delay:.2f} seconds...")
