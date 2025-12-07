@@ -9,6 +9,14 @@ from urllib.parse import urlparse
 
 # --- CONFIGURATION ---
 
+# Time to wait (in seconds) after a successful follower send
+# Set to 0 if you want to close immediately, or 120 for safety.
+POST_TASK_WAIT = 120 
+
+# Time to wait (in seconds) between switching websites
+# (Min, Max) range for random sleep
+INTER_SITE_DELAY = (30, 45)
+
 WEBSITES = [
     "https://instamoda.org/login",
     "https://takipcitime.com/login",
@@ -63,9 +71,9 @@ def setup_accounts():
         except json.JSONDecodeError as e:
             logging.error(f"CRITICAL: Local file 'accounts.json' has invalid JSON syntax: {e}")
             return []
-    except Exception as e:
-        logging.error(f"CRITICAL: Error reading local file: {e}")
-        return []
+        except Exception as e:
+            logging.error(f"CRITICAL: Error reading local file: {e}")
+            return []
 
     # FAILURE: Neither source worked
     logging.error("CRITICAL: No accounts found! Please set 'ACCOUNTS_JSON' secret or create 'accounts.json'.")
@@ -160,9 +168,16 @@ class PanelBot:
             return False
             
     def close_session(self):
-        self.session.close()
+        try:
+            self.session.close()
+        except Exception:
+            pass
 
     def run(self):
+        """
+        Returns:
+            bool: True if followers were successfully sent, False otherwise.
+        """
         if self.login():
             credits = self.get_credits()
             self.log(f"Credits available: {credits}")
@@ -191,10 +206,46 @@ def main():
     print(f"Loaded {len(accounts)} accounts.")
 
     for account in accounts:
-        current_user = account['username']
+        current_user = account.get('username')
+        password = account.get('password')
+        
+        if not current_user or not password:
+            logging.error(f"Account entry missing username or password: {account}")
+            continue
+
         print(f"\n==================================================")
         print(f" LOGGING IN WITH ACCOUNT: {current_user}")
         print(f"==================================================")
-        
+
         for i, site_url in enumerate(WEBSITES):
             print(f"\n--- Site {i+1}/{len(WEBSITES)}: {site_url} ---")
+            bot = None
+            try:
+                bot = PanelBot(site_url, current_user, password, TARGET_USER)
+                success = bot.run()
+                
+                if success:
+                    print(f"[{site_url}] Operation succeeded.")
+                    if POST_TASK_WAIT > 0:
+                        print(f">> Waiting {POST_TASK_WAIT}s for completion...")
+                        time.sleep(POST_TASK_WAIT)
+                else:
+                    print(f"[{site_url}] Operation failed or skipped.")
+            
+            except Exception as e:
+                logging.error(f"[{site_url}] Unexpected error: {e}")
+            
+            finally:
+                if bot:
+                    bot.close_session()
+
+            # Smart delay between websites (unless it's the last one
+            if i < len(WEBSITES) - 1:
+                delay = random.uniform(INTER_SITE_DELAY[0], INTER_SITE_DELAY[1])
+                print(f">> Cooldown: Waiting {delay:.2f} seconds...")
+                time.sleep(delay)
+
+    print("\nAll tasks completed successfully.")
+
+if __name__ == "__main__":
+    main()
