@@ -34,7 +34,7 @@ WEBSITES = [
 ]
 
 # The Instagram username that will receive the followers.
-TARGET_USER = "almostahad"
+TARGET_USER = "mr_faiz__1127"
 
 # ==============================================================================
 # LOGGING SETUP
