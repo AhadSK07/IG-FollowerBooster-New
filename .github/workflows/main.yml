@@ -2,10 +2,7 @@ name: Instagram Panel Automation
 
 on:
   workflow_dispatch: # Allows manual trigger button
-  schedule:
-    # Runs every 30 minutes
-    - cron: '*/30 * * * *'
-
+  
 jobs:
   run-automation:
     runs-on: ubuntu-latest
